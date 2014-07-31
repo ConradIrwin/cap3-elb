@@ -1,0 +1,72 @@
+require 'aws'
+require 'resolv'
+
+namespace :elb do
+  task :configure do
+    $load_balancer = AWS::ELB.new(
+      access_key_id: fetch(:aws_access_key_id),
+      secret_access_key: fetch(:aws_secret_access_key)
+    ).load_balancers[fetch(:load_balancer)]
+  end
+
+  desc "List the servers in the load balancer"
+  task :status => :configure do
+    in_balancer = $load_balancer.instances.each_with_object({}) { |i, result| result[i.ip_address] = i.elb_health }
+    roles(:app).each do |host|
+      ip = Resolv::DNS.new.getaddress(host.hostname).to_s
+      puts "#{host.hostname}: #{in_balancer.include?(ip) ? in_balancer[ip][:state] : "DOWN"}"
+    end
+  end
+
+  desc "Remove server from the load balancer"
+  task :remove => :configure  do
+    raise "don't remove more than one machine" if roles(:app).length > 1
+
+    on roles(:app), in: :sequence do |host|
+      instances = $load_balancer.instances.to_a
+      name = host.hostname[/^[^.]*/]
+
+
+      to_remove = instances.detect{ |instance| instance.tags[:Name] == name }
+      if to_remove
+
+
+        to_keep = instances - [to_remove]
+        unless to_keep.any?{ |instance| instance.elb_health[:state] == 'InService' }
+          raise "Refusing to take #{host} out of rotation as there are no other machines up"
+        end
+
+        puts "Removing #{host.hostname} from the #{fetch(:load_balancer).inspect} load balancer"
+
+        to_remove.remove_from_load_balancer
+        until to_remove.elb_health[:state] == "OutOfService"
+          print "."
+          sleep 1
+        end
+        puts "\n#{host.hostname} #{to_remove.elb_health[:state]}"
+      else
+        puts "#{host.hostname} is not in the #{fetch(:load_balancer).inspect} load balancer"
+      end
+    end
+  end
+
+  desc "Add server to the load balancer"
+  task :add => :configure do
+    on roles(:app), in: :sequence do |host|
+      puts "Adding #{host.hostname} to the #{fetch(:load_balancer).inspect} load balancer."
+
+      instance      = AWS::EC2.new.instances.filter('ip-address', Resolv::DNS.new.getaddress(host.hostname).to_s).first
+
+      $load_balancer.instances.register instance
+
+      puts "Waiting for #{host.hostname} to become active..."
+
+      instance = $load_balancer.instances[instance.id]
+      until instance.elb_health[:state] == "InService"
+        print "."
+        sleep 1
+      end
+      puts "\n#{host.hostname} #{instance.elb_health[:state]}"
+    end
+  end
+end
