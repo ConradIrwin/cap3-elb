@@ -1,6 +1,6 @@
 Gem::Specification.new do |gem|
   gem.name = 'cap3-elb'
-  gem.version = '0.1.0'
+  gem.version = '0.1.1'
 
   gem.summary = 'Capistrano tasks to maintain a load balancer'
   gem.description = "Provides new commands to manage your ELB load balancer from capistrano."
